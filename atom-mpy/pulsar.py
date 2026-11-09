@@ -28,6 +28,14 @@ class PulsarError(Exception):
         self.maybe_written = maybe_written
 
 
+def _cancel_pending_connect():
+    """aioble bricht nach einem Timeout den Verbindungsaufbau im Controller nicht ab."""
+    try:
+        bluetooth.BLE().gap_connect(None)
+    except Exception:
+        pass  # kein Verbindungsaufbau aktiv
+
+
 def _addr():
     return bytes(int(x, 16) for x in PULSAR_ADDR.split(":"))
 
@@ -43,14 +51,18 @@ async def run(ops):
     """Verbinden, PIN, ops ausfuehren, Boost lesen, trennen.
     ops: [("boost", sekunden|0), ("boost_extend", sekunden), ("humidity", bool)]
     Rueckgabe: (boost_aktiv, restsekunden)."""
-    dev = aioble.Device(aioble.ADDR_PUBLIC, _addr())
     conn = None
     for attempt in range(CONNECT_ATTEMPTS):
+        # Pro Versuch ein frisches Device: aioble laesst nach einem Timeout eine nie
+        # verbundene Connection am Device haengen und gibt sie beim naechsten
+        # connect() ungeprueft zurueck (conn_handle None -> TypeError bei GATT).
+        dev = aioble.Device(aioble.ADDR_PUBLIC, _addr())
         try:
             conn = await dev.connect(timeout_ms=CONNECT_TIMEOUT_MS)
             break
         except Exception as e:
             print("connect-versuch %d: %r" % (attempt + 1, e))
+            _cancel_pending_connect()
             if attempt + 1 == CONNECT_ATTEMPTS:
                 raise PulsarError("connect: %r" % e)
             await asyncio.sleep_ms(500)

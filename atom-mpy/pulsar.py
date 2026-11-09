@@ -10,7 +10,8 @@ import bluetooth
 
 from config import PIN, PULSAR_ADDR
 
-CONNECT_TIMEOUT_MS = 8000
+CONNECT_TIMEOUT_MS = 12000
+CONNECT_ATTEMPTS = 2  # schwaches Signal: ein zweiter Versuch vor dem roten Kreuz
 BOOST_RPM = 2400  # Quick-Boost der Hersteller-App
 
 AUTH_SVC = bluetooth.UUID("e6834e4b-7b3a-48e6-91e4-f1d005f564d3")
@@ -43,10 +44,16 @@ async def run(ops):
     ops: [("boost", sekunden|0), ("boost_extend", sekunden), ("humidity", bool)]
     Rueckgabe: (boost_aktiv, restsekunden)."""
     dev = aioble.Device(aioble.ADDR_PUBLIC, _addr())
-    try:
-        conn = await dev.connect(timeout_ms=CONNECT_TIMEOUT_MS)
-    except Exception as e:
-        raise PulsarError("connect: %r" % e)
+    conn = None
+    for attempt in range(CONNECT_ATTEMPTS):
+        try:
+            conn = await dev.connect(timeout_ms=CONNECT_TIMEOUT_MS)
+            break
+        except Exception as e:
+            print("connect-versuch %d: %r" % (attempt + 1, e))
+            if attempt + 1 == CONNECT_ATTEMPTS:
+                raise PulsarError("connect: %r" % e)
+            await asyncio.sleep_ms(500)
 
     written = False
     try:

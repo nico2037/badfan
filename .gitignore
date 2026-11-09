@@ -4,3 +4,4 @@ atom-ble/target/
 __pycache__/
 .DS_Store
 .claude/
+atom-mpy/.testlog.txt

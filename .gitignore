@@ -1,0 +1,6 @@
+atom-mpy/config.py
+.env
+atom-ble/target/
+__pycache__/
+.DS_Store
+.claude/

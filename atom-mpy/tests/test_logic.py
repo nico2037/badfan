@@ -210,6 +210,52 @@ class DisplayTests(unittest.TestCase):
             self.assertEqual(len(bm), 5)
             self.assertTrue(all(len(r) == 5 for r in bm))
 
+class SyncTests(unittest.TestCase):
+    def test_boot_sync_reads_running_boost(self):
+        c = L.Controller(0)
+        job = c.tick(0)
+        self.assertEqual((job["kind"], job["ops"]), ("sync", []))
+        c.result(job, True, (True, 300), 1000)
+        self.assertEqual(c.mode, L.BOOST)
+        self.assertEqual(c.boost_end, 1000 + 300_000)
+        self.assertIsNone(c.feedback)  # kein Haken beim stillen Abgleich
+        self.assertIsNone(c.tick(2000))
+
+    def test_boot_sync_idle_when_no_boost(self):
+        c = L.Controller(0)
+        c.result(c.tick(0), True, (False, 0), 10)
+        self.assertEqual((c.mode, c.link), (L.IDLE, "ok"))
+
+    def test_boot_sync_gives_up_after_limited_attempts(self):
+        c = L.Controller(0)
+        now, jobs = 0, 0
+        for _ in range(10):
+            job = c.tick(now)
+            if job:
+                jobs += 1
+                c.result(job, False, None, now)
+                self.assertIsNone(c.feedback)
+            now += L.RETRY_MAX_MS
+        self.assertEqual(jobs, L.SYNC_ATTEMPTS)
+        self.assertEqual(c.link, "error")
+
+    def test_no_separate_sync_when_restore_pending(self):
+        c = L.Controller(0, {"bath": True})
+        self.assertEqual(c.tick(0)["kind"], "restore")
+
+    def test_button_during_pending_sync_replaces_it(self):
+        c = L.Controller(0)
+        job = c.gesture("short", 0)
+        c.result(job, True, (True, 900), 100)
+        self.assertFalse(c.sync_pending)
+
+    def test_boost_started_via_app_is_picked_up(self):
+        c = L.Controller(0)
+        c.sync_pending = False
+        job = c.gesture("long", 0)
+        c.result(job, True, (True, 600), 10)  # Bademodus: Boost-Status wird ignoriert
+        self.assertEqual(c.mode, L.BATH)
+
 
 if __name__ == "__main__":
     unittest.main()

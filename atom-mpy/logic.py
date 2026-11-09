@@ -16,6 +16,7 @@ FEEDBACK_MS = 500  # Haken / Kreuz
 SELECT_SHOW_MS = 1500  # Anzeige der gewaehlten Boost-Dauer
 RETRY_MIN_MS = 5_000  # Backoff fuers Wiedereinschalten des Feuchtesensors
 RETRY_MAX_MS = 300_000
+SYNC_ATTEMPTS = 3  # Boot-Abgleich (nur lesen): begrenzt, kein Dauer-Scan
 
 # --- Gesten-Tabelle: (Modus, Geste) -> Aktion. Hier umbelegen. ---------------
 ACTIONS = {
@@ -52,6 +53,11 @@ class Controller:
         self.restore_pending = self.bath_flag
         self.retry_at = now
         self.retry_delay = RETRY_MIN_MS
+        # Boot-Abgleich: Boost-Zustand einmal lesen (beim Restore passiert das ohnehin)
+        self.sync_pending = not self.restore_pending
+        self.sync_left = SYNC_ATTEMPTS
+        self.sync_at = now
+        self.sync_delay = RETRY_MIN_MS
         self.feedback = None  # ("check"|"cross", bis)
         self.select_until = 0
 
@@ -95,6 +101,8 @@ class Controller:
             self.retry_delay = RETRY_MIN_MS
         if self.restore_pending and not self.busy and now >= self.retry_at:
             return self._start_restore()
+        if self.sync_pending and not self.busy and now >= self.sync_at:
+            return self._start("sync")
         return None
 
     # --- Jobs -------------------------------------------------------------
@@ -120,12 +128,18 @@ class Controller:
             return [("boost", 0), ("humidity", False)]
         if kind == "restore":
             return [("humidity", True)]
+        if kind == "sync":
+            return []  # nur Boost lesen, nichts schreiben
         raise ValueError(kind)
 
     def result(self, job, ok, boost_state, now, maybe_written=False):
         """boost_state = (aktiv, restsekunden) wie vom Pulsar gelesen, oder None."""
         self.busy = False
         kind = job["kind"]
+        if kind == "sync":
+            self._sync_result(ok, boost_state, now)
+            return
+        self.sync_pending = False  # jede erfolgreiche Session gleicht ohnehin ab
         if not ok:
             self.link = "error"
             self.feedback = ("cross", now + FEEDBACK_MS)
@@ -163,6 +177,31 @@ class Controller:
             if self.mode == BATH:
                 self.mode = IDLE
 
-        # Abgleich mit dem Pulsar (z. B. Boost per App beendet)
-        if self.mode == BOOST and boost_state is not None and not boost_state[0]:
+        self._apply_boost_state(boost_state, now)
+
+    def _apply_boost_state(self, boost_state, now):
+        """Abgleich mit dem Pulsar (Boost per App gestartet/beendet, Neustart des Atom)."""
+        if boost_state is None or self.mode == BATH:
+            return
+        active, rem = boost_state
+        if active and rem > 0:
+            if self.mode != BOOST:
+                self.boost_total = rem * 1000
+            self.mode = BOOST
+            self.boost_end = now + rem * 1000
+        elif self.mode == BOOST:
             self.mode = IDLE
+
+    def _sync_result(self, ok, boost_state, now):
+        if ok:
+            self.link = "ok"
+            self.sync_pending = False
+            self._apply_boost_state(boost_state, now)
+            return
+        self.link = "error"  # kein Kreuz: der Nutzer hat nichts ausgeloest
+        self.sync_left -= 1
+        if self.sync_left <= 0:
+            self.sync_pending = False
+        else:
+            self.sync_at = now + self.sync_delay
+            self.sync_delay = min(self.sync_delay * 2, RETRY_MAX_MS)
